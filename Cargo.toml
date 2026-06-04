@@ -1,0 +1,6 @@
+[package]
+name = "ternary-room"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Room abstraction for multi-agent ternary environments with doors and event history"
