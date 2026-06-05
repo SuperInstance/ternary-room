@@ -79,6 +79,15 @@ Snapshots clone the agent list and environment map. Restore replaces both. This 
 
 `ternary-room` builds on the agent concept from `ternary-agent`. It uses agent IDs (u64) to track which agents are where, but doesn't import the crate — the ID-based approach keeps it decoupled. `ternary-world` uses rooms as part of its simulation grid.
 
+## See Also
+
+- **ternary-agent** — Core agent types with ternary state
+- **ternary-channel** — Typed channels for ternary message passing
+- **ternary-bus** — Message bus for inter-agent communication
+- **ternary-navigator** — Pathfinding in ternary spatial graphs
+- **ternary-consensus** — Distributed consensus for ternary decisions
+- **ternary-harbor** — Service discovery and agent docking
+
 ## License
 
 MIT
