@@ -50,12 +50,18 @@ impl Door {
         if !self.can_pass(from_room) {
             return None;
         }
-        if from_room == self.room_a {
-            Some(self.room_b)
-        } else if from_room == self.room_b {
-            Some(self.room_a)
-        } else {
-            None
+        match &self.access {
+            // Use the stored destination directly — don't derive it from room_a/room_b.
+            DoorAccess::OneWay(_, dst) => Some(*dst),
+            _ => {
+                if from_room == self.room_a {
+                    Some(self.room_b)
+                } else if from_room == self.room_b {
+                    Some(self.room_a)
+                } else {
+                    None
+                }
+            }
         }
     }
 
