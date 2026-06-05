@@ -1,588 +1,470 @@
 #![forbid(unsafe_code)]
-
-//! Room abstraction for multi-agent ternary environments.
+//! Recursive room-tensor architecture.
 //!
-//! A `Room` contains agents and an environment state. Rooms are connected by
-//! `Door` objects with ternary access (locked, open, one-way). A `RoomCoordinator`
-//! manages agent transitions between rooms. `RoomHistory` records events.
+//! Every program is a room. Every room is a cell in the tensor.
+//! Rooms contain rooms. Tiles are projections. Connections are alive.
+//!
+//! The recursion IS the architecture:
+//! Dance floor → DJ board → instrument panel → signal path → code → metal → bits
+//! Same shape at every scale.
 
 use std::collections::HashMap;
 
-// ── Door ───────────────────────────────────────────────────────────────────
+// ============================================================
+// Connection — the living link between two tiles
+// ============================================================
 
-/// Access state of a door connecting two rooms.
-///
-/// - `Locked`: no agent may pass
-/// - `Open`: agents may pass in both directions
-/// - `OneWay(from, to)`: agents may only pass from `from` to `to`
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DoorAccess {
-    Locked,
-    Open,
-    OneWay(u64, u64), // from_room, to_room
-}
-
-/// A connection between two rooms with controlled access.
+/// A connection between two rooms. Not static — rises and falls.
 #[derive(Debug, Clone)]
-pub struct Door {
-    pub id: u64,
-    pub room_a: u64,
-    pub room_b: u64,
-    pub access: DoorAccess,
+pub struct Connection {
+    pub from: RoomId,
+    pub to: RoomId,
+    pub time_weight: f64,      // How long they've been connected (grows over time)
+    pub distance: f64,         // Physical/logical distance (0 = same spot, 1 = far)
+    pub familiarity: f64,      // How well they know each other (0 = stranger, 1 = known)
+    pub attraction: f64,       // Affinity signal (0 = repelled, 1 = drawn)
+    pub rhythm_sync: f64,      // Phase coherence (0 = off-beat, 1 = locked)
+    pub strength: f64,         // Computed overall strength
+    pub trend: f64,            // Positive = growing, negative = fading
+    pub ticks_alive: u64,
 }
 
-impl Door {
-    pub fn new(id: u64, room_a: u64, room_b: u64, access: DoorAccess) -> Self {
-        Self { id, room_a, room_b, access }
-    }
-
-    /// Check whether an agent in `from_room` can pass to the other side.
-    pub fn can_pass(&self, from_room: u64) -> bool {
-        match &self.access {
-            DoorAccess::Locked => false,
-            DoorAccess::Open => from_room == self.room_a || from_room == self.room_b,
-            DoorAccess::OneWay(src, _) => from_room == *src,
+impl Connection {
+    pub fn new(from: RoomId, to: RoomId) -> Self {
+        Self {
+            from, to,
+            time_weight: 0.0, distance: 0.5, familiarity: 0.0,
+            attraction: 0.5, rhythm_sync: 0.5, strength: 0.0,
+            trend: 0.0, ticks_alive: 0,
         }
     }
 
-    /// Get the destination room if the agent in `from_room` can pass.
-    pub fn destination(&self, from_room: u64) -> Option<u64> {
-        if !self.can_pass(from_room) {
-            return None;
+    /// Compute connection strength from all factors.
+    /// Strength is emergent, not just a sum.
+    pub fn compute_strength(&mut self) -> f64 {
+        let time_factor = 1.0 - (-self.time_weight * 0.1).exp(); // Saturating growth
+        let dist_factor = 1.0 - self.distance;
+        let base = time_factor * dist_factor * self.familiarity * self.attraction;
+        let sync_bonus = self.rhythm_sync * 0.3; // Rhythm adds extra on top
+        self.strength = (base + sync_bonus).clamp(0.0, 1.0);
+        self.strength
+    }
+
+    /// Tick the connection — age it, drift the trend.
+    pub fn tick(&mut self) {
+        self.ticks_alive += 1;
+        self.time_weight += 0.01;
+        // Trend drifts based on current strength
+        self.trend = self.strength - 0.5; // Growing if strong, fading if weak
+    }
+
+    /// What kind of connection is this?
+    pub fn flavor(&self) -> ConnectionFlavor {
+        if self.attraction > 0.7 && self.familiarity < 0.3 {
+            ConnectionFlavor::Electric   // Just met, drawn together — volatile
+        } else if self.familiarity > 0.7 && self.rhythm_sync > 0.7 {
+            ConnectionFlavor::Deep       // Known, synced — reliable
+        } else if self.distance > 0.7 && self.rhythm_sync > 0.8 {
+            ConnectionFlavor::Resonant   // Far apart but in phase — mysterious
+        } else if self.strength < 0.2 {
+            ConnectionFlavor::Fading     // Losing connection
+        } else {
+            ConnectionFlavor::Steady     // Normal, unremarkable (most connections)
         }
-        match &self.access {
-            // Use the stored destination directly — don't derive it from room_a/room_b.
-            DoorAccess::OneWay(_, dst) => Some(*dst),
-            _ => {
-                if from_room == self.room_a {
-                    Some(self.room_b)
-                } else if from_room == self.room_b {
-                    Some(self.room_a)
-                } else {
-                    None
-                }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectionFlavor {
+    Electric,  // Just met, high attraction — sparks
+    Deep,      // Long-known, synced — foundation
+    Resonant,  // Far but in phase — mysterious
+    Fading,    // Losing touch
+    Steady,    // Normal background connection
+}
+
+// ============================================================
+// Tile — how one room appears in another room's view
+// ============================================================
+
+/// A tile is a room's projection into another room's perspective.
+/// You don't see the full dancer — you see a tile of them.
+#[derive(Debug, Clone)]
+pub struct Tile {
+    pub room_id: RoomId,
+    pub brightness: f64,       // How prominent (distance-based)
+    pub warmth: f64,           // Familiarity tint
+    pub pulse_phase: f64,      // Rhythm sync visualization
+    pub color: TileColor,      // Overall impression
+    pub last_updated: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct TileColor { pub r: f64, pub g: f64, pub b: f64 }
+
+impl TileColor {
+    pub fn new(r: f64, g: f64, b: f64) -> Self { Self { r: r.clamp(0.0, 1.0), g: g.clamp(0.0, 1.0), b: b.clamp(0.0, 1.0) } }
+    pub fn warm() -> Self { Self::new(1.0, 0.6, 0.2) }    // Familiar
+    pub fn cool() -> Self { Self::new(0.2, 0.5, 1.0) }    // Stranger
+    pub fn hot() -> Self { Self::new(1.0, 0.2, 0.3) }     // Attracted
+    pub fn dim() -> Self { Self::new(0.3, 0.3, 0.3) }     // Far away
+    pub fn bright() -> Self { Self::new(0.9, 0.9, 1.0) }  // Close, synced
+}
+
+impl Tile {
+    pub fn new(room_id: RoomId) -> Self {
+        Self { room_id, brightness: 0.5, warmth: 0.5, pulse_phase: 0.0, color: TileColor::cool(), last_updated: 0 }
+    }
+
+    /// Update tile appearance from connection state.
+    pub fn update_from_connection(&mut self, conn: &Connection, tick: u64) {
+        self.brightness = 1.0 - conn.distance;
+        self.warmth = conn.familiarity;
+        self.pulse_phase = conn.rhythm_sync * std::f64::consts::TAU;
+
+        self.color = if conn.attraction > 0.7 { TileColor::hot() }
+            else if conn.familiarity > 0.7 { TileColor::warm() }
+            else if conn.distance > 0.7 { TileColor::dim() }
+            else if conn.rhythm_sync > 0.7 { TileColor::bright() }
+            else { TileColor::cool() };
+
+        self.last_updated = tick;
+    }
+}
+
+// ============================================================
+// Room — a perspective that contains a world
+// ============================================================
+
+pub type RoomId = usize;
+
+/// Room depth — what layer of the recursion we're at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RoomDepth {
+    Floor,       // Dance floor — dancers
+    Board,       // DJ control board — instruments
+    Panel,       // Instrument panel — settings/presets
+    Path,        // Signal path — effects/filters
+    Code,        // Code — functions
+    Metal,       // Metal — transistors/registers
+}
+
+impl RoomDepth {
+    pub fn deeper(&self) -> Option<RoomDepth> {
+        match self {
+            RoomDepth::Floor => Some(RoomDepth::Board),
+            RoomDepth::Board => Some(RoomDepth::Panel),
+            RoomDepth::Panel => Some(RoomDepth::Path),
+            RoomDepth::Path => Some(RoomDepth::Code),
+            RoomDepth::Code => Some(RoomDepth::Metal),
+            RoomDepth::Metal => None,
+        }
+    }
+}
+
+/// A room in the recursive tensor.
+/// Contains tiles (projections of other rooms), connections (living links),
+/// children (sub-rooms at the next depth), and its own state.
+#[derive(Debug, Clone)]
+pub struct Room {
+    pub id: RoomId,
+    pub depth: RoomDepth,
+    pub state: i8,                              // Ternary state: -1, 0, +1
+    pub tiles: HashMap<RoomId, Tile>,            // How other rooms appear here
+    pub connections: HashMap<RoomId, Connection>, // Living connections to other rooms
+    pub children: Vec<RoomId>,                   // Sub-rooms contained within
+    pub position: (usize, usize),                // Grid position (x, y)
+    pub tick: u64,
+}
+
+impl Room {
+    pub fn new(id: RoomId, depth: RoomDepth) -> Self {
+        Self {
+            id, depth, state: 0,
+            tiles: HashMap::new(), connections: HashMap::new(),
+            children: Vec::new(), position: (0, 0), tick: 0,
+        }
+    }
+
+    /// Place room at grid position.
+    pub fn at(mut self, x: usize, y: usize) -> Self { self.position = (x, y); self }
+
+    /// Connect to another room.
+    pub fn connect_to(&mut self, other: RoomId) {
+        let mut conn = Connection::new(self.id, other);
+        conn.compute_strength();
+        self.connections.insert(other, conn);
+        self.tiles.insert(other, Tile::new(other));
+    }
+
+    /// Connect with specific initial parameters.
+    pub fn connect_with(&mut self, other: RoomId, distance: f64, familiarity: f64, attraction: f64, rhythm_sync: f64) {
+        let mut conn = Connection::new(self.id, other);
+        conn.distance = distance;
+        conn.familiarity = familiarity;
+        conn.attraction = attraction;
+        conn.rhythm_sync = rhythm_sync;
+        conn.compute_strength();
+        self.connections.insert(other, conn);
+        self.tiles.insert(other, Tile::new(other));
+    }
+
+    /// Add a child room (go deeper).
+    pub fn add_child(&mut self, child_id: RoomId) { self.children.push(child_id); }
+
+    /// Tick the room — update all connections and tiles.
+    pub fn tick(&mut self) {
+        self.tick += 1;
+        for conn in self.connections.values_mut() {
+            conn.tick();
+            conn.compute_strength();
+        }
+        for (other_id, tile) in self.tiles.iter_mut() {
+            if let Some(conn) = self.connections.get(other_id) {
+                tile.update_from_connection(conn, self.tick);
             }
         }
     }
 
-    /// Lock the door.
-    pub fn lock(&mut self) {
-        self.access = DoorAccess::Locked;
+    /// Get connections sorted by strength (strongest first).
+    pub fn strongest_connections(&self) -> Vec<&Connection> {
+        let mut conns: Vec<_> = self.connections.values().collect();
+        conns.sort_by(|a, b| b.strength.partial_cmp(&a.strength).unwrap());
+        conns
     }
 
-    /// Open the door in both directions.
-    pub fn open(&mut self) {
-        self.access = DoorAccess::Open;
-    }
-}
-
-// ── Room Event / History ───────────────────────────────────────────────────
-
-/// An event that occurred in a room.
-#[derive(Debug, Clone)]
-pub struct RoomEvent {
-    pub tick: u64,
-    pub agent_id: u64,
-    pub kind: String,
-    pub detail: String,
-}
-
-/// Event log for a room.
-#[derive(Debug, Clone)]
-pub struct RoomHistory {
-    events: Vec<RoomEvent>,
-}
-
-impl RoomHistory {
-    pub fn new() -> Self {
-        Self { events: Vec::new() }
+    /// Get connections by flavor.
+    pub fn connections_by_flavor(&self, flavor: ConnectionFlavor) -> Vec<&Connection> {
+        self.connections.values().filter(|c| c.flavor() == flavor).collect()
     }
 
-    /// Record an event.
-    pub fn record(&mut self, event: RoomEvent) {
-        self.events.push(event);
+    /// Average connection strength.
+    pub fn avg_strength(&self) -> f64 {
+        if self.connections.is_empty() { return 0.0; }
+        self.connections.values().map(|c| c.strength).sum::<f64>() / self.connections.len() as f64
     }
 
-    /// Get all events.
-    pub fn events(&self) -> &[RoomEvent] {
-        &self.events
+    /// Number of active (non-fading) connections.
+    pub fn active_connections(&self) -> usize {
+        self.connections.values().filter(|c| c.strength > 0.2).count()
     }
 
-    /// Number of recorded events.
-    pub fn len(&self) -> usize {
-        self.events.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.events.is_empty()
-    }
-
-    /// Filter events by kind.
-    pub fn filter_by_kind(&self, kind: &str) -> Vec<&RoomEvent> {
-        self.events.iter().filter(|e| e.kind == kind).collect()
+    /// Tile view — what this room "sees."
+    pub fn tile_view(&self) -> Vec<&Tile> {
+        let mut tiles: Vec<_> = self.tiles.values().collect();
+        tiles.sort_by(|a, b| b.brightness.partial_cmp(&a.brightness).unwrap());
+        tiles
     }
 }
 
-impl Default for RoomHistory {
-    fn default() -> Self {
-        Self::new()
-    }
+// ============================================================
+// Tensor — the grid of all rooms at one depth
+// ============================================================
+
+/// A tensor layer — all rooms at the same depth, arranged in a grid.
+pub struct TensorLayer {
+    pub depth: RoomDepth,
+    pub rooms: HashMap<RoomId, Room>,
+    pub width: usize,
+    pub height: usize,
 }
 
-// ── Room State Snapshot ────────────────────────────────────────────────────
-
-/// A snapshot of a room's agents and environment at a point in time.
-#[derive(Debug, Clone)]
-pub struct RoomState {
-    pub room_id: u64,
-    pub agents: Vec<u64>,
-    pub environment: HashMap<String, String>,
-}
-
-// ── Room ───────────────────────────────────────────────────────────────────
-
-/// A room containing agents and an environment map.
-#[derive(Debug)]
-pub struct Room {
-    pub id: u64,
-    pub name: String,
-    agents: Vec<u64>,
-    environment: HashMap<String, String>,
-    history: RoomHistory,
-}
-
-impl Room {
-    pub fn new(id: u64, name: &str) -> Self {
-        Self {
-            id,
-            name: name.to_string(),
-            agents: Vec::new(),
-            environment: HashMap::new(),
-            history: RoomHistory::new(),
-        }
+impl TensorLayer {
+    pub fn new(depth: RoomDepth, width: usize, height: usize) -> Self {
+        Self { depth, rooms: HashMap::new(), width, height }
     }
 
-    /// Add an agent to the room. Returns false if already present.
-    pub fn add_agent(&mut self, agent_id: u64) -> bool {
-        if self.agents.contains(&agent_id) {
-            return false;
-        }
-        self.agents.push(agent_id);
-        self.history.record(RoomEvent {
-            tick: 0,
-            agent_id,
-            kind: "enter".to_string(),
-            detail: format!("agent {} entered room {}", agent_id, self.id),
-        });
-        true
-    }
-
-    /// Remove an agent from the room. Returns true if the agent was present.
-    pub fn remove_agent(&mut self, agent_id: u64) -> bool {
-        if let Some(pos) = self.agents.iter().position(|&a| a == agent_id) {
-            self.agents.remove(pos);
-            self.history.record(RoomEvent {
-                tick: 0,
-                agent_id,
-                kind: "leave".to_string(),
-                detail: format!("agent {} left room {}", agent_id, self.id),
-            });
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Get the list of agents in the room.
-    pub fn agents(&self) -> &[u64] {
-        &self.agents
-    }
-
-    /// Set an environment variable.
-    pub fn set_env(&mut self, key: &str, value: &str) {
-        self.environment.insert(key.to_string(), value.to_string());
-    }
-
-    /// Get an environment variable.
-    pub fn get_env(&self, key: &str) -> Option<&str> {
-        self.environment.get(key).map(|s| s.as_str())
-    }
-
-    /// Take a snapshot of the current room state.
-    pub fn snapshot(&self) -> RoomState {
-        RoomState {
-            room_id: self.id,
-            agents: self.agents.clone(),
-            environment: self.environment.clone(),
-        }
-    }
-
-    /// Restore room state from a snapshot.
-    pub fn restore(&mut self, state: RoomState) {
-        self.agents = state.agents;
-        self.environment = state.environment;
-    }
-
-    /// Access the room's event history.
-    pub fn history(&self) -> &RoomHistory {
-        &self.history
-    }
-
-    pub fn history_mut(&mut self) -> &mut RoomHistory {
-        &mut self.history
-    }
-
-    /// Number of agents in the room.
-    pub fn agent_count(&self) -> usize {
-        self.agents.len()
-    }
-}
-
-// ── Room Builder ───────────────────────────────────────────────────────────
-
-/// Builder for constructing rooms with initial state.
-pub struct RoomBuilder {
-    id: u64,
-    name: String,
-    agents: Vec<u64>,
-    environment: HashMap<String, String>,
-}
-
-impl RoomBuilder {
-    pub fn new(id: u64, name: &str) -> Self {
-        Self {
-            id,
-            name: name.to_string(),
-            agents: Vec::new(),
-            environment: HashMap::new(),
-        }
-    }
-
-    /// Add an initial agent.
-    pub fn agent(mut self, agent_id: u64) -> Self {
-        self.agents.push(agent_id);
-        self
-    }
-
-    /// Set an environment variable.
-    pub fn env(mut self, key: &str, value: &str) -> Self {
-        self.environment.insert(key.to_string(), value.to_string());
-        self
-    }
-
-    /// Build the room.
-    pub fn build(self) -> Room {
-        let mut room = Room::new(self.id, &self.name);
-        for aid in self.agents {
-            room.add_agent(aid);
-        }
-        for (k, v) in self.environment {
-            room.set_env(&k, &v);
-        }
-        room
-    }
-}
-
-// ── Room Coordinator ───────────────────────────────────────────────────────
-
-/// Manages agent transitions between rooms via doors.
-pub struct RoomCoordinator {
-    rooms: HashMap<u64, Room>,
-    doors: Vec<Door>,
-}
-
-impl RoomCoordinator {
-    pub fn new() -> Self {
-        Self {
-            rooms: HashMap::new(),
-            doors: Vec::new(),
-        }
-    }
-
-    /// Add a room.
+    /// Add a room to the tensor at grid position.
     pub fn add_room(&mut self, room: Room) {
         self.rooms.insert(room.id, room);
     }
 
-    /// Add a door connecting two rooms.
-    pub fn add_door(&mut self, door: Door) {
-        self.doors.push(door);
+    /// Get room at grid position.
+    pub fn room_at(&self, x: usize, y: usize) -> Option<&Room> {
+        self.rooms.values().find(|r| r.position == (x, y))
     }
 
-    /// Try to move `agent_id` from `from_room` to `to_room`.
-    ///
-    /// Returns `Ok(())` on success or an error string explaining why not.
-    pub fn transfer(&mut self, agent_id: u64, from_room: u64, to_room: u64) -> Result<(), String> {
-        // Check source room has the agent
-        let src = self.rooms.get(&from_room)
-            .ok_or_else(|| format!("room {} does not exist", from_room))?;
-        if !src.agents().contains(&agent_id) {
-            return Err(format!("agent {} not in room {}", agent_id, from_room));
-        }
-        // Check destination exists
-        if !self.rooms.contains_key(&to_room) {
-            return Err(format!("room {} does not exist", to_room));
-        }
-        // Find a door that allows passage
-        let can_pass = self.doors.iter().any(|d| {
-            (d.room_a == from_room && d.room_b == to_room || d.room_b == from_room && d.room_a == to_room)
-                && d.can_pass(from_room)
-        });
-        if !can_pass {
-            return Err(format!("no open door from room {} to room {}", from_room, to_room));
-        }
-        // Perform the transfer
-        let src = self.rooms.get_mut(&from_room).unwrap();
-        src.remove_agent(agent_id);
-        let dst = self.rooms.get_mut(&to_room).unwrap();
-        dst.add_agent(agent_id);
-        Ok(())
+    /// Get room at grid position (mutable).
+    pub fn room_at_mut(&mut self, x: usize, y: usize) -> Option<&mut Room> {
+        self.rooms.values_mut().find(|r| r.position == (x, y))
     }
 
-    /// Get a reference to a room.
-    pub fn room(&self, id: u64) -> Option<&Room> {
-        self.rooms.get(&id)
+    /// Tick all rooms.
+    pub fn tick(&mut self) {
+        for room in self.rooms.values_mut() { room.tick(); }
     }
 
-    /// Get a mutable reference to a room.
-    pub fn room_mut(&mut self, id: u64) -> Option<&mut Room> {
-        self.rooms.get_mut(&id)
+    /// Get neighbors of a room (adjacent in grid).
+    pub fn neighbors(&self, room_id: RoomId) -> Vec<RoomId> {
+        if let Some(room) = self.rooms.get(&room_id) {
+            let (x, y) = room.position;
+            let mut neighbors = Vec::new();
+            for (dx, dy) in &[(-1i32, 0i32), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)] {
+                let nx = (x as i32 + dx) as usize;
+                let ny = (y as i32 + dy) as usize;
+                if nx < self.width && ny < self.height {
+                    if let Some(n) = self.room_at(nx, ny) { neighbors.push(n.id); }
+                }
+            }
+            neighbors
+        } else { vec![] }
     }
 
-    /// Number of rooms.
-    pub fn room_count(&self) -> usize {
-        self.rooms.len()
+    /// Column view — all rooms at a given x position.
+    pub fn column(&self, x: usize) -> Vec<&Room> {
+        self.rooms.values().filter(|r| r.position.0 == x).collect()
     }
 
-    /// Number of doors.
-    pub fn door_count(&self) -> usize {
-        self.doors.len()
+    /// Row view — all rooms at a given y position.
+    pub fn row(&self, y: usize) -> Vec<&Room> {
+        self.rooms.values().filter(|r| r.position.1 == y).collect()
     }
-}
 
-impl Default for RoomCoordinator {
-    fn default() -> Self {
-        Self::new()
+    /// Diagonal view — rooms where x == y (or offset).
+    pub fn diagonal(&self, offset: i32) -> Vec<&Room> {
+        self.rooms.values().filter(|r| r.position.0 as i32 - r.position.1 as i32 == offset).collect()
+    }
+
+    /// Total active connections in the layer.
+    pub fn total_active_connections(&self) -> usize {
+        self.rooms.values().map(|r| r.active_connections()).sum()
+    }
+
+    /// Layer health — average room avg_strength.
+    pub fn health(&self) -> f64 {
+        if self.rooms.is_empty() { return 0.0; }
+        self.rooms.values().map(|r| r.avg_strength()).sum::<f64>() / self.rooms.len() as f64
     }
 }
 
-// ── Tests ──────────────────────────────────────────────────────────────────
+// ============================================================
+// Recursive Tensor — the full stack of layers
+// ============================================================
+
+/// The full recursive tensor — layers stacked from Floor to Metal.
+pub struct RecursiveTensor {
+    pub layers: HashMap<RoomDepth, TensorLayer>,
+    pub cross_layer_connections: Vec<CrossLayerLink>,
+    pub tick: u64,
+}
+
+/// A connection between rooms at different depths.
+/// The dancer IS connected to the instrument that produces their music.
+#[derive(Debug, Clone)]
+pub struct CrossLayerLink {
+    pub upper_room: (RoomDepth, RoomId),
+    pub lower_room: (RoomDepth, RoomId),
+    pub link_type: CrossLinkType,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CrossLinkType {
+    Contains,    // Upper room contains lower room (DJ board contains synth)
+    Projects,    // Lower room projects into upper room (transistor produces the sound)
+    Controls,    // Upper room controls lower room (DJ controls the synth)
+    Realizes,    // Lower room realizes upper room's intent (code executes the algorithm)
+}
+
+impl RecursiveTensor {
+    pub fn new() -> Self {
+        Self { layers: HashMap::new(), cross_layer_connections: Vec::new(), tick: 0 }
+    }
+
+    /// Add a layer at a given depth.
+    pub fn add_layer(&mut self, layer: TensorLayer) {
+        self.layers.insert(layer.depth, layer);
+    }
+
+    /// Link rooms across layers.
+    pub fn link_across(&mut self, link: CrossLayerLink) {
+        self.cross_layer_connections.push(link);
+    }
+
+    /// Tick all layers.
+    pub fn tick(&mut self) {
+        self.tick += 1;
+        for layer in self.layers.values_mut() { layer.tick(); }
+    }
+
+    /// Get the full vertical slice at position (x, y) across all layers.
+    pub fn vertical_slice(&self, x: usize, y: usize) -> Vec<(RoomDepth, &Room)> {
+        let mut slice = Vec::new();
+        for (depth, layer) in &self.layers {
+            if let Some(room) = layer.room_at(x, y) {
+                slice.push((*depth, room));
+            }
+        }
+        slice
+    }
+
+    /// Get all cross-layer links for a room.
+    pub fn links_for_room(&self, depth: RoomDepth, room_id: RoomId) -> Vec<&CrossLayerLink> {
+        self.cross_layer_connections.iter().filter(|l| {
+            (l.upper_room.0 == depth && l.upper_room.1 == room_id) ||
+            (l.lower_room.0 == depth && l.lower_room.1 == room_id)
+        }).collect()
+    }
+
+    /// Total rooms across all layers.
+    pub fn total_rooms(&self) -> usize {
+        self.layers.values().map(|l| l.rooms.len()).sum()
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn door_locked_cannot_pass() {
-        let d = Door::new(1, 10, 20, DoorAccess::Locked);
-        assert!(!d.can_pass(10));
-        assert!(!d.can_pass(20));
-        assert!(d.destination(10).is_none());
-    }
+    // Connection tests
+    #[test] fn test_connection_new() { let c = Connection::new(0, 1); assert_eq!(c.from, 0); assert_eq!(c.strength, 0.0); }
+    #[test] fn test_connection_strength() { let mut c = Connection::new(0, 1); c.distance = 0.0; c.familiarity = 1.0; c.attraction = 1.0; c.rhythm_sync = 1.0; let s = c.compute_strength(); assert!(s > 0.1, "strength={}", s); }
+    #[test] fn test_connection_strength_far() { let mut c = Connection::new(0, 1); c.distance = 1.0; c.familiarity = 0.5; c.attraction = 0.5; let s = c.compute_strength(); assert!(s < 0.3, "strength={}", s); }
+    #[test] fn test_connection_tick() { let mut c = Connection::new(0, 1); c.tick(); assert_eq!(c.ticks_alive, 1); assert!(c.time_weight > 0.0); }
+    #[test] fn test_connection_flavor_electric() { let c = Connection { attraction: 0.9, familiarity: 0.1, ..Connection::new(0,1) }; assert_eq!(c.flavor(), ConnectionFlavor::Electric); }
+    #[test] fn test_connection_flavor_deep() { let c = Connection { familiarity: 0.9, rhythm_sync: 0.8, ..Connection::new(0,1) }; assert_eq!(c.flavor(), ConnectionFlavor::Deep); }
+    #[test] fn test_connection_flavor_resonant() { let c = Connection { distance: 0.8, rhythm_sync: 0.9, familiarity: 0.5, attraction: 0.5, ..Connection::new(0,1) }; assert_eq!(c.flavor(), ConnectionFlavor::Resonant); }
+    #[test] fn test_connection_flavor_fading() { let mut c = Connection::new(0,1); c.distance = 0.9; c.familiarity = 0.1; c.attraction = 0.1; c.compute_strength(); assert_eq!(c.flavor(), ConnectionFlavor::Fading); }
 
-    #[test]
-    fn door_open_both_ways() {
-        let d = Door::new(1, 10, 20, DoorAccess::Open);
-        assert!(d.can_pass(10));
-        assert!(d.can_pass(20));
-        assert_eq!(d.destination(10), Some(20));
-        assert_eq!(d.destination(20), Some(10));
-    }
+    // Tile tests
+    #[test] fn test_tile_new() { let t = Tile::new(1); assert_eq!(t.room_id, 1); }
+    #[test] fn test_tile_update() { let mut t = Tile::new(1); let c = Connection { distance: 0.0, familiarity: 1.0, attraction: 0.5, rhythm_sync: 0.8, ..Connection::new(0,1) }; t.update_from_connection(&c, 1); assert!(t.brightness > 0.9); }
+    #[test] fn test_tile_color_warm() { assert!(TileColor::warm().r > 0.9); }
+    #[test] fn test_tile_color_hot() { assert!(TileColor::hot().r > 0.9); }
 
-    #[test]
-    fn door_one_way() {
-        let d = Door::new(1, 10, 20, DoorAccess::OneWay(10, 20));
-        assert!(d.can_pass(10));
-        assert!(!d.can_pass(20));
-        assert_eq!(d.destination(10), Some(20));
-        assert_eq!(d.destination(20), None);
-    }
+    // Room tests
+    #[test] fn test_room_new() { let r = Room::new(0, RoomDepth::Floor); assert_eq!(r.state, 0); }
+    #[test] fn test_room_connect() { let mut r = Room::new(0, RoomDepth::Floor); r.connect_to(1); assert!(r.connections.contains_key(&1)); assert!(r.tiles.contains_key(&1)); }
+    #[test] fn test_room_connect_with() { let mut r = Room::new(0, RoomDepth::Floor); r.connect_with(1, 0.1, 0.9, 0.8, 0.7); assert!(r.connections[&1].strength > 0.0, "str={}", r.connections[&1].strength); }
+    #[test] fn test_room_add_child() { let mut r = Room::new(0, RoomDepth::Floor); r.add_child(10); assert!(r.children.contains(&10)); }
+    #[test] fn test_room_tick() { let mut r = Room::new(0, RoomDepth::Floor); r.connect_to(1); r.tick(); assert_eq!(r.tick, 1); }
+    #[test] fn test_room_strongest() { let mut r = Room::new(0, RoomDepth::Floor); r.connect_with(1, 0.1, 0.9, 0.9, 0.9); r.connect_with(2, 0.9, 0.1, 0.1, 0.1); let s = r.strongest_connections(); assert_eq!(s[0].to, 1); }
+    #[test] fn test_room_avg_strength() { let mut r = Room::new(0, RoomDepth::Floor); r.connect_with(1, 0.1, 0.9, 0.9, 0.9); assert!(r.avg_strength() > 0.0); }
+    #[test] fn test_room_active() { let mut r = Room::new(0, RoomDepth::Floor); r.connect_with(1, 0.9, 0.1, 0.1, 0.1); r.connect_with(2, 0.1, 0.9, 0.9, 0.9); assert!(r.active_connections() >= 1); }
+    #[test] fn test_room_tile_view() { let mut r = Room::new(0, RoomDepth::Floor); r.connect_with(1, 0.1, 0.9, 0.9, 0.9); r.connect_with(2, 0.9, 0.1, 0.1, 0.1); r.tick(); let view = r.tile_view(); assert_eq!(view.len(), 2); assert!(view[0].brightness >= view[1].brightness); }
+    #[test] fn test_room_at_position() { let r = Room::new(0, RoomDepth::Floor).at(3, 4); assert_eq!(r.position, (3, 4)); }
 
-    #[test]
-    fn door_lock_and_open() {
-        let mut d = Door::new(1, 10, 20, DoorAccess::Open);
-        d.lock();
-        assert_eq!(d.access, DoorAccess::Locked);
-        d.open();
-        assert_eq!(d.access, DoorAccess::Open);
-    }
+    // TensorLayer tests
+    #[test] fn test_layer_new() { let l = TensorLayer::new(RoomDepth::Floor, 4, 4); assert_eq!(l.width, 4); }
+    #[test] fn test_layer_add_room() { let mut l = TensorLayer::new(RoomDepth::Floor, 4, 4); l.add_room(Room::new(0, RoomDepth::Floor).at(0, 0)); assert!(l.rooms.contains_key(&0)); }
+    #[test] fn test_layer_room_at() { let mut l = TensorLayer::new(RoomDepth::Floor, 4, 4); l.add_room(Room::new(0, RoomDepth::Floor).at(2, 3)); assert!(l.room_at(2, 3).is_some()); assert!(l.room_at(0, 0).is_none()); }
+    #[test] fn test_layer_neighbors() { let mut l = TensorLayer::new(RoomDepth::Floor, 4, 4); l.add_room(Room::new(0, RoomDepth::Floor).at(1, 1)); l.add_room(Room::new(1, RoomDepth::Floor).at(0, 0)); l.add_room(Room::new(2, RoomDepth::Floor).at(2, 2)); let n = l.neighbors(0); assert!(!n.is_empty()); }
+    #[test] fn test_layer_column() { let mut l = TensorLayer::new(RoomDepth::Floor, 4, 4); l.add_room(Room::new(0, RoomDepth::Floor).at(1, 0)); l.add_room(Room::new(1, RoomDepth::Floor).at(1, 2)); l.add_room(Room::new(2, RoomDepth::Floor).at(2, 1)); let col = l.column(1); assert_eq!(col.len(), 2); }
+    #[test] fn test_layer_row() { let mut l = TensorLayer::new(RoomDepth::Floor, 4, 4); l.add_room(Room::new(0, RoomDepth::Floor).at(0, 1)); l.add_room(Room::new(1, RoomDepth::Floor).at(2, 1)); let row = l.row(1); assert_eq!(row.len(), 2); }
+    #[test] fn test_layer_diagonal() { let mut l = TensorLayer::new(RoomDepth::Floor, 4, 4); l.add_room(Room::new(0, RoomDepth::Floor).at(0, 0)); l.add_room(Room::new(1, RoomDepth::Floor).at(1, 1)); l.add_room(Room::new(2, RoomDepth::Floor).at(0, 1)); let diag = l.diagonal(0); assert_eq!(diag.len(), 2); }
+    #[test] fn test_layer_tick() { let mut l = TensorLayer::new(RoomDepth::Floor, 4, 4); let mut r = Room::new(0, RoomDepth::Floor); r.connect_to(1); l.add_room(r); l.tick(); }
+    #[test] fn test_layer_health() { let mut l = TensorLayer::new(RoomDepth::Floor, 4, 4); let mut r = Room::new(0, RoomDepth::Floor); r.connect_with(1, 0.1, 0.9, 0.9, 0.9); l.add_room(r); assert!(l.health() > 0.0); }
+    #[test] fn test_layer_total_active() { let mut l = TensorLayer::new(RoomDepth::Floor, 4, 4); let mut r = Room::new(0, RoomDepth::Floor); r.connect_with(1, 0.1, 0.9, 0.9, 0.9); l.add_room(r); assert!(l.total_active_connections() >= 1); }
 
-    #[test]
-    fn room_add_remove_agent() {
-        let mut room = Room::new(1, "lobby");
-        assert!(room.add_agent(42));
-        assert!(!room.add_agent(42)); // duplicate
-        assert_eq!(room.agent_count(), 1);
-        assert!(room.remove_agent(42));
-        assert!(!room.remove_agent(42)); // already gone
-        assert_eq!(room.agent_count(), 0);
-    }
+    // RecursiveTensor tests
+    #[test] fn test_recursive_new() { let t = RecursiveTensor::new(); assert!(t.layers.is_empty()); }
+    #[test] fn test_recursive_add_layer() { let mut t = RecursiveTensor::new(); t.add_layer(TensorLayer::new(RoomDepth::Floor, 4, 4)); assert!(t.layers.contains_key(&RoomDepth::Floor)); }
+    #[test] fn test_recursive_link_across() { let mut t = RecursiveTensor::new(); t.link_across(CrossLayerLink { upper_room: (RoomDepth::Floor, 0), lower_room: (RoomDepth::Board, 1), link_type: CrossLinkType::Contains }); assert_eq!(t.cross_layer_connections.len(), 1); }
+    #[test] fn test_recursive_tick() { let mut t = RecursiveTensor::new(); t.add_layer(TensorLayer::new(RoomDepth::Floor, 4, 4)); t.tick(); assert_eq!(t.tick, 1); }
+    #[test] fn test_recursive_vertical_slice() { let mut t = RecursiveTensor::new(); let mut fl = TensorLayer::new(RoomDepth::Floor, 4, 4); fl.add_room(Room::new(0, RoomDepth::Floor).at(1, 1)); t.add_layer(fl); let mut bl = TensorLayer::new(RoomDepth::Board, 4, 4); bl.add_room(Room::new(10, RoomDepth::Board).at(1, 1)); t.add_layer(bl); let slice = t.vertical_slice(1, 1); assert_eq!(slice.len(), 2); }
+    #[test] fn test_recursive_links_for_room() { let mut t = RecursiveTensor::new(); t.link_across(CrossLayerLink { upper_room: (RoomDepth::Floor, 0), lower_room: (RoomDepth::Board, 1), link_type: CrossLinkType::Contains }); let links = t.links_for_room(RoomDepth::Floor, 0); assert_eq!(links.len(), 1); }
+    #[test] fn test_recursive_total_rooms() { let mut t = RecursiveTensor::new(); let mut fl = TensorLayer::new(RoomDepth::Floor, 2, 2); fl.add_room(Room::new(0, RoomDepth::Floor)); fl.add_room(Room::new(1, RoomDepth::Floor)); t.add_layer(fl); assert_eq!(t.total_rooms(), 2); }
 
-    #[test]
-    fn room_environment() {
-        let mut room = Room::new(1, "lab");
-        room.set_env("temperature", "22");
-        assert_eq!(room.get_env("temperature"), Some("22"));
-        assert_eq!(room.get_env("humidity"), None);
-    }
-
-    #[test]
-    fn room_snapshot_restore() {
-        let mut room = Room::new(1, "test");
-        room.add_agent(1);
-        room.add_agent(2);
-        room.set_env("light", "on");
-        let snap = room.snapshot();
-        room.remove_agent(1);
-        room.set_env("light", "off");
-        room.restore(snap);
-        assert_eq!(room.agent_count(), 2);
-        assert_eq!(room.get_env("light"), Some("on"));
-    }
-
-    #[test]
-    fn room_history_records_events() {
-        let mut room = Room::new(1, "hub");
-        room.add_agent(10);
-        room.remove_agent(10);
-        let events = room.history().events();
-        assert_eq!(events.len(), 2);
-        assert_eq!(events[0].kind, "enter");
-        assert_eq!(events[1].kind, "leave");
-    }
-
-    #[test]
-    fn room_history_filter() {
-        let mut h = RoomHistory::new();
-        h.record(RoomEvent { tick: 1, agent_id: 1, kind: "enter".into(), detail: "".into() });
-        h.record(RoomEvent { tick: 2, agent_id: 1, kind: "speak".into(), detail: "".into() });
-        h.record(RoomEvent { tick: 3, agent_id: 1, kind: "enter".into(), detail: "".into() });
-        assert_eq!(h.filter_by_kind("enter").len(), 2);
-    }
-
-    #[test]
-    fn room_builder() {
-        let room = RoomBuilder::new(5, "bridge")
-            .agent(1)
-            .agent(2)
-            .env("alert", "red")
-            .build();
-        assert_eq!(room.id, 5);
-        assert_eq!(room.name, "bridge");
-        assert_eq!(room.agent_count(), 2);
-        assert_eq!(room.get_env("alert"), Some("red"));
-    }
-
-    #[test]
-    fn coordinator_transfer_success() {
-        let mut coord = RoomCoordinator::new();
-        let mut r1 = Room::new(1, "A");
-        r1.add_agent(100);
-        coord.add_room(r1);
-        coord.add_room(Room::new(2, "B"));
-        coord.add_door(Door::new(1, 1, 2, DoorAccess::Open));
-        assert!(coord.transfer(100, 1, 2).is_ok());
-        assert_eq!(coord.room(1).unwrap().agent_count(), 0);
-        assert_eq!(coord.room(2).unwrap().agent_count(), 1);
-    }
-
-    #[test]
-    fn coordinator_transfer_locked_door() {
-        let mut coord = RoomCoordinator::new();
-        let mut r1 = Room::new(1, "A");
-        r1.add_agent(100);
-        coord.add_room(r1);
-        coord.add_room(Room::new(2, "B"));
-        coord.add_door(Door::new(1, 1, 2, DoorAccess::Locked));
-        assert!(coord.transfer(100, 1, 2).is_err());
-    }
-
-    #[test]
-    fn coordinator_transfer_agent_not_present() {
-        let mut coord = RoomCoordinator::new();
-        coord.add_room(Room::new(1, "A"));
-        coord.add_room(Room::new(2, "B"));
-        coord.add_door(Door::new(1, 1, 2, DoorAccess::Open));
-        assert!(coord.transfer(999, 1, 2).is_err());
-    }
-
-    #[test]
-    fn coordinator_transfer_room_not_found() {
-        let mut coord = RoomCoordinator::new();
-        coord.add_room(Room::new(1, "A"));
-        assert!(coord.transfer(1, 1, 99).is_err());
-    }
-
-    #[test]
-    fn coordinator_counts() {
-        let mut coord = RoomCoordinator::new();
-        coord.add_room(Room::new(1, "A"));
-        coord.add_room(Room::new(2, "B"));
-        coord.add_door(Door::new(1, 1, 2, DoorAccess::Open));
-        assert_eq!(coord.room_count(), 2);
-        assert_eq!(coord.door_count(), 1);
-    }
-
-    #[test]
-    fn coordinator_room_mut() {
-        let mut coord = RoomCoordinator::new();
-        coord.add_room(Room::new(1, "A"));
-        coord.room_mut(1).unwrap().set_env("x", "y");
-        assert_eq!(coord.room(1).unwrap().get_env("x"), Some("y"));
-    }
-
-    #[test]
-    fn history_default_empty() {
-        let h = RoomHistory::default();
-        assert!(h.is_empty());
-    }
-
-    #[test]
-    fn room_state_snapshot_fields() {
-        let snap = RoomState {
-            room_id: 7,
-            agents: vec![1, 2, 3],
-            environment: {
-                let mut m = HashMap::new();
-                m.insert("key".into(), "val".into());
-                m
-            },
-        };
-        assert_eq!(snap.room_id, 7);
-        assert_eq!(snap.agents.len(), 3);
-    }
-
-    #[test]
-    fn coordinator_default() {
-        let c = RoomCoordinator::default();
-        assert_eq!(c.room_count(), 0);
-    }
-
-    #[test]
-    fn door_destination_unknown_room() {
-        let d = Door::new(1, 10, 20, DoorAccess::Open);
-        assert!(d.destination(99).is_none());
-    }
-
-    #[test]
-    fn room_agents_slice() {
-        let mut room = Room::new(1, "test");
-        room.add_agent(5);
-        room.add_agent(10);
-        assert_eq!(room.agents(), &[5, 10]);
-    }
-
-    #[test]
-    fn coordinator_one_way_door_transfer() {
-        let mut coord = RoomCoordinator::new();
-        let mut r1 = Room::new(1, "entry");
-        r1.add_agent(50);
-        coord.add_room(r1);
-        coord.add_room(Room::new(2, "vault"));
-        coord.add_door(Door::new(1, 1, 2, DoorAccess::OneWay(1, 2)));
-        // Forward pass works
-        assert!(coord.transfer(50, 1, 2).is_ok());
-        // Reverse does not
-        assert!(coord.transfer(50, 2, 1).is_err());
-    }
+    // Depth recursion
+    #[test] fn test_depth_deeper() { assert_eq!(RoomDepth::Floor.deeper(), Some(RoomDepth::Board)); }
+    #[test] fn test_depth_metal_bottom() { assert_eq!(RoomDepth::Metal.deeper(), None); }
 }
